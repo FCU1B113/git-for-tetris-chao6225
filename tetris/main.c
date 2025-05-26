@@ -35,7 +35,9 @@ typedef enum
     PURPLE,
     CYAN,
     WHITE,
+    GHOST = 100, // ANSI code 100 = Bright Black (gray background)
     BLACK = 0,
+
 } Color;
 
 typedef enum
@@ -247,6 +249,9 @@ void printCanvas(Block canvas[CANVAS_HEIGHT][CANVAS_WIDTH], State* state)
             }
         }
     }
+    // 顯示分數
+    printf("\033[%d;%dHScore: %d", 2, CANVAS_WIDTH * 2 + 5, state->score);
+
     return;
 }
 
@@ -345,7 +350,7 @@ int clearLine(Block canvas[CANVAS_HEIGHT][CANVAS_WIDTH])
 }
 
 
-void logic(Block canvas[CANVAS_HEIGHT][CANVAS_WIDTH], State* state)
+void logic(Block canvas[CANVAS_HEIGHT][CANVAS_WIDTH], State* state, int* fallDelay)
 {
     if (ROTATE_FUNC())
     {
@@ -375,14 +380,22 @@ void logic(Block canvas[CANVAS_HEIGHT][CANVAS_WIDTH], State* state)
     }
     else if (FALL_FUNC())
     {
-        state->fallTime += FALL_DELAY * CANVAS_HEIGHT;
+        // Hard drop: 持續往下直到不能移動
+        while (move(canvas, state->x, state->y, state->rotate, state->x, state->y + 1, state->rotate, state->queue[0]))
+        {
+            state->y++;
+            state->score++; // 每下移一格得 1 分（可依你喜好調整）
+        }
+        state->fallTime = 0;
     }
 
+
     state->fallTime += RENDER_DELAY;
+    int delay = *fallDelay;
 
     while (state->fallTime >= FALL_DELAY)
     {
-        state->fallTime -= FALL_DELAY;
+        state->fallTime -= delay;
         if (move(canvas, state->x, state->y, state->rotate, state->x, state->y + 1, state->rotate, state->queue[0]))
         {
             state->y++;
@@ -413,6 +426,9 @@ void logic(Block canvas[CANVAS_HEIGHT][CANVAS_WIDTH], State* state)
 
 int main()
 {
+    int fallDelay = FALL_DELAY;
+    DWORD startTime = GetTickCount();
+
     srand(time(NULL));
     State state = {
         .x = CANVAS_WIDTH / 2,
@@ -451,7 +467,17 @@ int main()
     while (1)
     {
         printCanvas(canvas, &state);
-        logic(canvas, &state);
+        logic(canvas, &state, &fallDelay);
+        DWORD currentTime = GetTickCount();
+        if ((currentTime - startTime) >= 5000) // 每5秒
+        {
+            startTime = currentTime;
+            if (fallDelay > 100)
+            {
+                fallDelay -= 70; // 每次加速70ms
+            }
+        }
+
         Sleep(100);
     }
 
