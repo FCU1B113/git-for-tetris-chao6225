@@ -4,6 +4,10 @@
 #include <time.h>
 #include <windows.h>
 
+#define MAX_LEVEL 10
+#define INITIAL_FALL_DELAY 500
+#define MIN_FALL_DELAY 100
+
 #define CANVAS_WIDTH 10
 #define CANVAS_HEIGHT 20
 
@@ -16,6 +20,7 @@
 #define ROTATE_KEY 0x26 
 #define DOWN_KEY 0x28 
 #define FALL_KEY 0x20 
+#define SWITCH_KEY 0x51 // Q 鍵
 
 // 判斷按鍵是否有被按下的函式
 #define LEFT_FUNC() GetAsyncKeyState(LEFT_KEY) & 0x8000
@@ -23,6 +28,7 @@
 #define ROTATE_FUNC() GetAsyncKeyState(ROTATE_KEY) & 0x8000
 #define DOWN_FUNC() GetAsyncKeyState(DOWN_KEY) & 0x8000
 #define FALL_FUNC() GetAsyncKeyState(FALL_KEY) & 0x8000
+#define SWITCH_FUNC() GetAsyncKeyState(SWITCH_KEY) & 0x8000
 
 
 
@@ -35,9 +41,7 @@ typedef enum
     PURPLE,
     CYAN,
     WHITE,
-    GHOST = 100, // ANSI code 100 = Bright Black (gray background)
     BLACK = 0,
-
 } Color;
 
 typedef enum
@@ -64,10 +68,15 @@ typedef struct
 {
     int x;
     int y;
-    int score;
+    int line;
     int rotate;
     int fallTime;
+    int level;
+    int score;
+    int combo;
     ShapeId queue[4];
+    ShapeId switchShape;
+    bool switched;
 } State;
 
 typedef struct
@@ -216,7 +225,7 @@ void resetBlock(Block* block)
 
 void printCanvas(Block canvas[CANVAS_HEIGHT][CANVAS_WIDTH], State* state)
 {
-    printf("\033[0;0H\n");
+    printf("\033[1;1H\n");
     for (int i = 0; i < CANVAS_HEIGHT; i++)
     {
         printf("|");
@@ -227,15 +236,36 @@ void printCanvas(Block canvas[CANVAS_HEIGHT][CANVAS_WIDTH], State* state)
         printf("\033[0m|\n");
     }
 
+    // 顯示Switch:
+    printf("\033[%d;%dHSwitch:", 1, CANVAS_WIDTH * 2 + 5);
+    Shape switchData = shapes[state->switchShape];
+    for (int j = 0; j < 4; j++)
+    {
+        printf("\033[%d;%dH", 1 + j, CANVAS_WIDTH * 2 + 15);
+        for (int k = 0; k < 4; k++)
+        {
+            if (j < switchData.size && k < switchData.size && switchData.rotates[0][j][k])
+            {
+                printf("\x1b[%dm  ", switchData.color);
+            }
+            else
+            {
+                printf("\x1b[0m  ");
+            }
+        }
+    }////
+
+
+
     // 輸出Next:
-    printf("\033[%d;%dHNext:", 3, CANVAS_WIDTH * 2 + 5);
+    printf("\033[%d;%dHNext:", 6, CANVAS_WIDTH * 2 + 5);
     // 輸出有甚麼方塊
     for (int i = 1; i <= 3; i++)
     {
         Shape shapeData = shapes[state->queue[i]];
         for (int j = 0; j < 4; j++)
         {
-            printf("\033[%d;%dH", i * 4 + j, CANVAS_WIDTH * 2 + 15);
+            printf("\033[%d;%dH", 6 + (i - 1) * 4 + j, CANVAS_WIDTH * 2 + 15);
             for (int k = 0; k < 4; k++)
             {
                 if (j < shapeData.size && k < shapeData.size && shapeData.rotates[0][j][k])
@@ -249,8 +279,11 @@ void printCanvas(Block canvas[CANVAS_HEIGHT][CANVAS_WIDTH], State* state)
             }
         }
     }
-    // 顯示分數
-    printf("\033[%d;%dHScore: %d", 2, CANVAS_WIDTH * 2 + 5, state->score);
+    // 顯示分數與等級
+    printf("\033[%d;%dHLine: %d", CANVAS_HEIGHT - 5, CANVAS_WIDTH * 2 + 5, state->line);
+    printf("\033[%d;%dHLevel: %d", CANVAS_HEIGHT - 4, CANVAS_WIDTH * 2 + 5, state->level);
+    printf("\033[%d;%dHScore: %d", CANVAS_HEIGHT - 3, CANVAS_WIDTH * 2 + 5, state->score);
+    printf("\033[%d;%dHCombo: %d", CANVAS_HEIGHT - 2, CANVAS_WIDTH * 2 + 5, state->combo);
 
     return;
 }
@@ -350,8 +383,15 @@ int clearLine(Block canvas[CANVAS_HEIGHT][CANVAS_WIDTH])
 }
 
 
-void logic(Block canvas[CANVAS_HEIGHT][CANVAS_WIDTH], State* state, int* fallDelay)
+void logic(Block canvas[CANVAS_HEIGHT][CANVAS_WIDTH], State* state)
 {
+    // 根據分數調整等級（每 5 行升級）
+    state->level = state->line / 5;
+    if (state->level > MAX_LEVEL) state->level = MAX_LEVEL;
+
+    int currentFallDelay = INITIAL_FALL_DELAY - (state->level * 40);
+    if (currentFallDelay < MIN_FALL_DELAY) currentFallDelay = MIN_FALL_DELAY;
+
     if (ROTATE_FUNC())
     {
         int newRotate = (state->rotate + 1) % 4;
@@ -380,30 +420,70 @@ void logic(Block canvas[CANVAS_HEIGHT][CANVAS_WIDTH], State* state, int* fallDel
     }
     else if (FALL_FUNC())
     {
-        // Hard drop: 持續往下直到不能移動
-        while (move(canvas, state->x, state->y, state->rotate, state->x, state->y + 1, state->rotate, state->queue[0]))
-        {
-            state->y++;
-            state->score++; // 每下移一格得 1 分（可依你喜好調整）
-        }
-        state->fallTime = 0;
+        state->fallTime += currentFallDelay * CANVAS_HEIGHT;
     }
+    else if (SWITCH_FUNC() && !state->switched)
+    {
+        // 清除目前的方塊
+        Shape oldShape = shapes[state->queue[0]];
+        for (int i = 0; i < oldShape.size; i++)
+        {
+            for (int j = 0; j < oldShape.size; j++)
+            {
+                if (oldShape.rotates[state->rotate][i][j])
+                {
+                    resetBlock(&canvas[state->y + i][state->x + j]);
+                }
+            }
+        }
+
+        // 更換成 switchShape
+        state->queue[0] = state->switchShape;
+        state->switchShape = rand() % 7;
+        state->rotate = 0;
+        state->switched = true;
+
+        Shape newShape = shapes[state->queue[0]];
+        for (int i = 0; i < newShape.size; i++)
+        {
+            for (int j = 0; j < newShape.size; j++)
+            {
+                if (newShape.rotates[0][i][j])
+                {
+                    setBlock(&canvas[state->y + i][state->x + j], newShape.color, state->queue[0], true);
+                }
+            }
+        }
+    }////
 
 
     state->fallTime += RENDER_DELAY;
-    int delay = *fallDelay;
 
-    while (state->fallTime >= FALL_DELAY)
+    while (state->fallTime >= currentFallDelay)
     {
-        state->fallTime -= delay;
+        state->fallTime -= currentFallDelay;
+
         if (move(canvas, state->x, state->y, state->rotate, state->x, state->y + 1, state->rotate, state->queue[0]))
         {
             state->y++;
         }
         else
         {
-            state->score += clearLine(canvas);
+            // 這裡方塊已經落地，固定它
+            // 將當前方塊的 current 設為 false，表示不再是活動方塊
+            Shape shapeData = shapes[state->queue[0]];
+            for (int i = 0; i < shapeData.size; i++)
+            {
+                for (int j = 0; j < shapeData.size; j++)
+                {
+                    if (shapeData.rotates[state->rotate][i][j])
+                    {
+                        canvas[state->y + i][state->x + j].current = false;
+                    }
+                }
+            }
 
+            state->switched = false;
             state->x = CANVAS_WIDTH / 2;
             state->y = 0;
             state->rotate = 0;
@@ -413,29 +493,65 @@ void logic(Block canvas[CANVAS_HEIGHT][CANVAS_WIDTH], State* state, int* fallDel
             state->queue[2] = state->queue[3];
             state->queue[3] = rand() % 7;
 
-            //結束輸出
+            int lines = clearLine(canvas);
+            state->line += lines;
+
+            if (lines > 0) {
+                // 加 combo 分數
+                state->combo++;
+                // 基礎得分
+                switch (lines) {
+                case 1:
+                    state->score += 40 * (state->level + 1);
+                    break;
+                case 2:
+                    state->score += 100 * (state->level + 1);
+                    break;
+                case 3:
+                    state->score += 300 * (state->level + 1);
+                    break;
+                case 4:
+                    state->score += 1200 * (state->level + 1);
+                    break;
+                }
+
+                // combo 額外得分
+                state->score += 50 * state->combo * (state->level + 1);
+
+            }
+            else {
+                state->combo = 0; // 連擊中斷
+            }
+
+
+
             if (!move(canvas, state->x, state->y, state->rotate, state->x, state->y, state->rotate, state->queue[0]))
             {
-                printf("\033[%d;%dH\x1b[41m GAME OVER \x1b[0m\033[%d;%dH", CANVAS_HEIGHT - 3, CANVAS_WIDTH * 2 + 5, CANVAS_HEIGHT + 5, 0);
+                printf("\033[%d;%dH\x1b[41m   GAME OVER   \x1b[0m", CANVAS_HEIGHT + 2, CANVAS_WIDTH * 2 + 5);
+
                 exit(0);//結束遊戲
             }
         }
+
     }
     return;
 }
 
 int main()
 {
-    int fallDelay = FALL_DELAY;
-    DWORD startTime = GetTickCount();
-
     srand(time(NULL));
     State state = {
         .x = CANVAS_WIDTH / 2,
         .y = 0,
-        .score = 0,
+        .line = 0,
         .rotate = 0,
-        .fallTime = 0 };
+        .fallTime = 0,
+        .level = 0,
+        .combo = 0
+    };
+
+    state.switchShape = rand() % 7;
+    state.switched = false;
 
     for (int i = 0; i < 4; i++)
     {
@@ -467,17 +583,7 @@ int main()
     while (1)
     {
         printCanvas(canvas, &state);
-        logic(canvas, &state, &fallDelay);
-        DWORD currentTime = GetTickCount();
-        if ((currentTime - startTime) >= 5000) // 每5秒
-        {
-            startTime = currentTime;
-            if (fallDelay > 100)
-            {
-                fallDelay -= 70; // 每次加速70ms
-            }
-        }
-
+        logic(canvas, &state);
         Sleep(100);
     }
 
