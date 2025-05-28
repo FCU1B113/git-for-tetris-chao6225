@@ -29,6 +29,9 @@
 #define DOWN_FUNC() GetAsyncKeyState(DOWN_KEY) & 0x8000
 #define FALL_FUNC() GetAsyncKeyState(FALL_KEY) & 0x8000
 #define SWITCH_FUNC() GetAsyncKeyState(SWITCH_KEY) & 0x8000
+#define START_KEY 0x0D  // Enter 鍵
+#define START_FUNC() (GetAsyncKeyState(START_KEY) & 0x8000)
+
 
 
 
@@ -208,6 +211,17 @@ Shape shapes[7] = {
               {1, 1, 0},
               {1, 0, 0}}}},
 };
+
+void waitForStart() {
+    system("cls");
+    printf("\n\n\n\t\tTETRIS \n");
+    printf("\n\t請按下 Enter 開始\n");
+
+    while (!START_FUNC()) {
+        Sleep(100);  // 等待玩家按下開始鍵
+    }
+}
+
 
 void setBlock(Block* block, Color color, ShapeId shape, bool current)
 {
@@ -536,10 +550,11 @@ void logic(Block canvas[CANVAS_HEIGHT][CANVAS_WIDTH], State* state)
     }
     return;
 }
-
 int main()
 {
     srand(time(NULL));
+
+    waitForStart();
     State state = {
         .x = CANVAS_WIDTH / 2,
         .y = 0,
